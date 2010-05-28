@@ -1,0 +1,63 @@
+SET client_min_messages = warning;
+\set ECHO none
+RESET client_min_messages;
+SELECT maparray(ARRAY[1,3,5], 'int4inc'::regproc);
+ maparray 
+----------
+ {2,4,6}
+(1 row)
+
+SELECT maparray(maparray(ARRAY[-10,10,0]::int2[], 'int2abs'), 'int2um');
+  maparray   
+-------------
+ {-10,-10,0}
+(1 row)
+
+SELECT maparray(ARRAY[200000000, 0]::int8[], 'int8inc'::regproc);
+   maparray    
+---------------
+ {200000001,1}
+(1 row)
+
+CREATE FUNCTION _floatdiv2(float) RETURNS float AS $$
+SELECT $1 / 2.0
+$$ LANGUAGE 'SQL' IMMUTABLE STRICT;
+SELECT maparray(ARRAY[1.5::float,0.3,1], '_floatdiv2');
+    maparray     
+-----------------
+ {0.75,0.15,0.5}
+(1 row)
+
+SELECT maparray(ARRAY['test', 'McDonald']::text[], 'upper');
+    maparray     
+-----------------
+ {TEST,MCDONALD}
+(1 row)
+
+CREATE TABLE fatest(
+	iary int4[],
+	tary text[]
+);
+INSERT INTO fatest (iary) VALUES
+(ARRAY[3, 5, 10]),
+(ARRAY[-100, NULL, NULL, NULL, 5]),
+('[0:1]={2,3}'),
+(ARRAY[[1,2],[2,3]]);
+SELECT maparray(iary, 'int4inc'), maparray(iary, 'int4um') FROM fatest;
+        maparray        |        maparray         
+------------------------+-------------------------
+ {4,6,11}               | {-3,-5,-10}
+ {-99,NULL,NULL,NULL,6} | {100,NULL,NULL,NULL,-5}
+ [0:1]={3,4}            | [0:1]={-2,-3}
+ {{2,3},{3,4}}          | {{-1,-2},{-2,-3}}
+(4 rows)
+
+SELECT reducearray(iary, 'int4pl') FROM fatest;
+ reducearray 
+-------------
+          18
+         -95
+           5
+           8
+(4 rows)
+

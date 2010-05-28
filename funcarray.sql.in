@@ -1,0 +1,11 @@
+CREATE FUNCTION maparray(anyarray, regproc) RETURNS anyarray
+AS 'MODULE_PATHNAME'
+LANGUAGE 'C' IMMUTABLE STRICT;
+
+CREATE FUNCTION reducearray(anyarray, regproc) RETURNS anyelement
+AS 'MODULE_PATHNAME'
+LANGUAGE 'C' IMMUTABLE STRICT;
+
+CREATE FUNCTION filterarray(anyarray, regproc) RETURNS anyarray
+AS 'MODULE_PATHNAME'
+LANGUAGE 'C' IMMUTABLE STRICT;
