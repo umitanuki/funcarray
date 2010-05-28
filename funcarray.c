@@ -503,7 +503,6 @@ filterarray(PG_FUNCTION_ARGS)
 	if (mc->typlen > 0)
 	{
 		int			i, nelems;
-		size_t		bytes;
 		bool		hasnull;
 
 		hasnull = ARR_HASNULL(oldarray);
@@ -610,7 +609,49 @@ filterarray(PG_FUNCTION_ARGS)
 	}
 	else
 	{
-		elog(ERROR, "variable length elements not supported so far.");
+		Datum	   *values;
+		bool	   *nulls;
+		int			i, nelems;
+		int			newlen;
+
+		deconstruct_array(oldarray, mc->element_type,
+						  mc->typlen, mc->typbyval, mc->typalign,
+						  &values, &nulls, &nelems);
+
+		if (nelems == 0)
+		{
+			PG_RETURN_NULL();
+		}
+
+		newlen = 0;
+		/*
+		 *	To avoid allocate double datum array,
+		 *	we overwrite the new value on the old array.
+		 *	This is possible since filter() processes values
+		 *	from head one by one.
+		 */
+		for(i = 0; i < nelems; i++)
+		{
+			if (!nulls[i])
+			{
+				if (DatumGetBool(
+					FunctionCall1(&mc->flinfo, values[i])))
+				{
+					values[newlen] = values[i];
+					nulls[newlen] = false;
+					newlen++;
+				}
+			}
+			else
+			{
+				nulls[newlen] = nulls[i];
+			}
+		}
+
+		newarray = construct_md_array(values, nulls, ARR_NDIM(oldarray),
+							&newlen, ARR_LBOUND(oldarray),
+							mc->element_type, mc->typlen,
+							mc->typbyval, mc->typalign);
 	}
 
 	PG_RETURN_ARRAYTYPE_P(newarray);
