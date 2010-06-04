@@ -1,0 +1,24 @@
+funcarray - a set of functional array operations for PostgreSQL.
+
+* maparray( anyarray, regproc( anyelement ) )
+    returns anyarray
+  This calls lambda function for each element of the array.
+  The value returned from lambda is the element in the same position
+  of the new array that will be returned as the result of maparray.
+
+* reducearray( anyarray, regproc( anyelement, anyelement))
+    returns anyelement
+  This calls lambda function for each element of the array, to reduce
+  them into a single value. The lambda accepts two arguments, one for
+  the state value and the other for the new coming element.
+
+* filterarray( anyarray, regproc( anyelement ) )
+    returns anyarray
+  This calls lambda function for each element of the array that
+  returns boolean value taking the element as its only argument.
+  If the returned boolean is true, the element will be still at the same
+  position, whereas if the boolean is false then the element will be removed
+  and its position padded by the subsequent elements.
+
+
+Hitoshi Harada (a.k.a. umitanuki)
