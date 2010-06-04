@@ -20,15 +20,16 @@ SELECT maparray(ARRAY['test', 'McDonald']::text[], 'upper');
 
 CREATE TABLE fatest(
 	iary int4[],
-	tary text[]
+	tary text[],
+	proc regproc
 );
 
-INSERT INTO fatest (iary) VALUES
-(ARRAY[3, 5, 10]),
-(ARRAY[-100, NULL, NULL, NULL, 5]),
-('[0:1]={2,3}'),
-(ARRAY[[1,2],[2,3]]);
+INSERT INTO fatest (iary, proc) VALUES
+(ARRAY[3, 5, 10], 'int4inc'),
+(ARRAY[-100, NULL, NULL, NULL, 5], 'int4um'),
+('[0:1]={2,3}', 'int4inc'),
+(ARRAY[[1,2],[2,3]], 'int4um');
 
-SELECT maparray(iary, 'int4inc'), maparray(iary, 'int4um') FROM fatest;
+SELECT maparray(iary, 'int4inc'), maparray(iary, proc) FROM fatest;
 
 SELECT reducearray(iary, 'int4pl') FROM fatest;

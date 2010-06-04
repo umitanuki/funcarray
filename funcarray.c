@@ -95,13 +95,14 @@ Datum
 maparray(PG_FUNCTION_ARGS)
 {
 	ArrayType	   *oldarray = PG_GETARG_ARRAYTYPE_P(0);
+	RegProcedure	procid = PG_GETARG_OID(1);
 	MapContext	   *mc;
 	ArrayType	   *newarray;
 
-	if (fcinfo->flinfo->fn_extra == NULL)
+	if (fcinfo->flinfo->fn_extra == NULL ||
+		((MapContext *) fcinfo->flinfo->fn_extra)->flinfo.fn_oid != procid)
 	{
 		/* first call */
-		RegProcedure	procid = PG_GETARG_OID(1);
 		MemoryContext	oldcontext;
 
 		oldcontext = MemoryContextSwitchTo(fcinfo->flinfo->fn_mcxt);
@@ -153,32 +154,17 @@ maparray(PG_FUNCTION_ARGS)
 		mc = (MapContext *) fcinfo->flinfo->fn_extra;
 	}
 
-	if (mc->typlen > 0)
+	if (mc->typlen > 0 &&
+		mc->optimize > 0 && !ARR_HASNULL(oldarray))
 	{
 		int			i, nelems;
 		size_t		bytes;
 		bool		hasnull;
 
 		bytes = ARR_SIZE(oldarray);
-//		newarray = (ArrayType *) palloc(bytes);
 		newarray = DatumGetArrayTypePCopy(oldarray);
 		hasnull = ARR_HASNULL(oldarray);
 		nelems = ArrayGetNItems(ARR_NDIM(oldarray), ARR_DIMS(oldarray));
-
-		/*
-		 *	header should look the same in new and old,
-		 *	including null bitmap
-		 */
-//		if (hasnull)
-//		{
-//			memcpy(newarray, oldarray,
-//				ARR_OVERHEAD_WITHNULLS(ARR_NDIM(oldarray), nelems));
-//		}
-//		else
-//		{
-//			memcpy(newarray, oldarray,
-//				ARR_OVERHEAD_NONULLS(ARR_NDIM(oldarray)));
-//		}
 
 		if (mc->optimize == 'i' && !hasnull)
 		{
@@ -206,46 +192,7 @@ maparray(PG_FUNCTION_ARGS)
 		}
 		else
 		{
-			/* general way */
-			bits8	   *bitmap = ARR_NULLBITMAP(oldarray);
-			int			bitmask = 1;
-			char	   *olddata = ARR_DATA_PTR(oldarray);
-			char	   *newdata = ARR_DATA_PTR(newarray);
-			int			inc;
-
-			inc = att_align_nominal(mc->typlen, mc->typalign);
-			for(i = 0; i < nelems; i++)
-			{
-				Datum	oldelem;
-				Datum	newelem;
-
-				if (bitmap && (*bitmap & bitmask) == 0)
-				{
-					/* do nothing */
-				}
-				else
-				{
-					oldelem = fetch_att(olddata, mc->typbyval, mc->typlen);
-					newelem = FunctionCall1(&mc->flinfo, oldelem);
-					if (mc->typbyval)
-						store_att_byval(newdata, newelem, mc->typlen);
-					else
-						memmove(newdata, DatumGetPointer(newelem), mc->typlen);
-
-					olddata += inc;
-					newdata += inc;
-				}
-
-				if (bitmap)
-				{
-					bitmask <<= 1;
-					if (bitmask == 0x100)
-					{
-						bitmap++;
-						bitmask = 1;
-					}
-				}
-			}
+			elog(ERROR, "unknown optimize code = %c", mc->optimize);
 		}
 	}
 	else
@@ -264,9 +211,16 @@ maparray(PG_FUNCTION_ARGS)
 
 		for(i = 0; i < nelems; i++)
 		{
-			if (!nulls[i])
+			if (!nulls[i] || !mc->flinfo.fn_strict)
 			{
-				values[i] = FunctionCall1(&mc->flinfo, values[i]);
+				FunctionCallInfoData	fcinfo;
+
+				InitFunctionCallInfoData(fcinfo, &mc->flinfo, 1, NULL, NULL);
+				fcinfo.arg[0] = values[i];
+				fcinfo.argnull[0] = nulls[i];
+
+				values[i] = FunctionCallInvoke(&fcinfo);
+				nulls[i] = fcinfo.isnull;
 			}
 		}
 
