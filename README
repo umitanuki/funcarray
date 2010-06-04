@@ -18,7 +18,7 @@ funcarray - a set of functional array operations for PostgreSQL.
   returns boolean value taking the element as its only argument.
   If the returned boolean is true, the element will be still at the same
   position, whereas if the boolean is false then the element will be removed
-  and its position padded by the subsequent elements.
+  and its position will be filled by the subsequent elements.
 
 
 Hitoshi Harada (a.k.a. umitanuki)
