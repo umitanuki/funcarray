@@ -1,5 +1,7 @@
 funcarray - a set of functional array operations for PostgreSQL.
 
+
+=== OVERVIEW ===
 * maparray( anyarray, regproc( anyelement ) )
     returns anyarray
   This calls lambda function for each element of the array.
@@ -19,6 +21,38 @@ funcarray - a set of functional array operations for PostgreSQL.
   If the returned boolean is true, the element will be still at the same
   position, whereas if the boolean is false then the element will be removed
   and its position will be filled by the subsequent elements.
+
+
+=== INSTALL ===
+This module is provided in the same way as contrib modules
+distributed with PostgreSQL. An example to build it is:
+
+$ cd funcarray
+$ export USE_PGXS=1
+$ make
+$ make install
+
+To test the module, try:
+
+$ make installcheck
+
+If your system hasn't pg_config installed in its PATH, try to put
+the module under the contrib/ then make && make install.
+
+
+=== LICENSE ===
+This module is distributed under the New BSD license. For more details,
+see the full text of the license in the file LICENSE.
+
+
+=== CAUTION ===
+It is tested in PostgreSQL 9.0 on CentOS Linux 5.4, though it should be
+possible to run on Windows systems.
+
+
+=== WEB SITE ===
+Go to GitHub repository: http://github.com/umitanuki/funcarray
+
 
 
 Hitoshi Harada (a.k.a. umitanuki)
