@@ -2,11 +2,13 @@
 
 #include "access/tupmacs.h"
 #include "catalog/pg_proc.h"
+#include "catalog/pg_type.h"
 #include "nodes/makefuncs.h"
 #include "parser/parse_coerce.h"
 #include "utils/array.h"
-#include "utils/syscache.h"
+#include "utils/builtins.h"
 #include "utils/lsyscache.h"
+#include "utils/syscache.h"
 
 PG_MODULE_MAGIC;
 
@@ -33,6 +35,7 @@ Datum maparray(PG_FUNCTION_ARGS);
 Datum reducearray(PG_FUNCTION_ARGS);
 Datum filterarray(PG_FUNCTION_ARGS);
 
+
 /*
  *	check_map_lambda_type
  *		Check if the argument type and return type match the input type.
@@ -49,6 +52,7 @@ check_map_lambda_type(Oid procid, Oid element_type)
 	oidvector	   *argtypes;
 	bool			isnull;
 	Oid				arg1type;
+	Oid				coerce_funcid;
 
 	ftup = SearchSysCache(PROCOID, ObjectIdGetDatum(procid), 0, 0, 0);
 	if (!HeapTupleIsValid(ftup))
@@ -80,8 +84,18 @@ check_map_lambda_type(Oid procid, Oid element_type)
 
 	/* argument type must match the input type */
 	arg1type = *((Oid *) ARR_DATA_PTR(argtypes));
-//	if (!IsBinaryCoercible(arg1type, element_type))
 	if (!can_coerce_type(1, &element_type, &arg1type, COERCION_IMPLICIT))
+	{
+		ReleaseSysCache(ftup);
+		return false;
+	}
+
+	/*
+	 * can_coerce_type() doesn't report COERCION_PATH_FUNC case.
+	 * We need binary coercible case only.
+	 */
+	if (find_coercion_pathway(arg1type, element_type,
+			COERCION_IMPLICIT, &coerce_funcid) != COERCION_PATH_RELABELTYPE)
 	{
 		ReleaseSysCache(ftup);
 		return false;
@@ -102,8 +116,11 @@ maparray(PG_FUNCTION_ARGS)
 	if (fcinfo->flinfo->fn_extra == NULL ||
 		((MapContext *) fcinfo->flinfo->fn_extra)->flinfo.fn_oid != procid)
 	{
-		/* first call */
+		/* set up context */
 		MemoryContext	oldcontext;
+
+		if (fcinfo->flinfo->fn_extra)
+			pfree(fcinfo->flinfo->fn_extra);
 
 		oldcontext = MemoryContextSwitchTo(fcinfo->flinfo->fn_mcxt);
 
@@ -113,12 +130,17 @@ maparray(PG_FUNCTION_ARGS)
 							&mc->typlen, &mc->typbyval, &mc->typalign);
 		fmgr_info(procid, &mc->flinfo);
 		mc->optimize = 0;
-		if (mc->typlen == sizeof(uint32) && mc->typbyval &&
+		if (mc->typlen == sizeof(int32) && mc->typbyval &&
 			mc->typalign == 'i')
 		{
 			mc->optimize = 'i';
 		}
-		else if (mc->typlen == sizeof(uint16) && mc->typbyval &&
+		else if (mc->typlen == sizeof(int64) && mc->typbyval &&
+			mc->typalign == 'd')
+		{
+			mc->optimize = 'd';
+		}
+		else if (mc->typlen == sizeof(int16) && mc->typbyval &&
 			mc->typalign == 's')
 		{
 			mc->optimize = 's';
@@ -143,56 +165,88 @@ maparray(PG_FUNCTION_ARGS)
 		/* type check */
 		if (!check_map_lambda_type(procid, mc->element_type))
 		{
-			elog(ERROR, "function(%d) type mismatch", procid);
+			elog(ERROR, "function %s type mismatch",
+				format_procedure(procid));
 		}
 
 		MemoryContextSwitchTo(oldcontext);
 	}
 	else
 	{
-		/* second or later */
+		/* restore the previous call info */
 		mc = (MapContext *) fcinfo->flinfo->fn_extra;
 	}
 
-	if (mc->typlen > 0 &&
-		mc->optimize > 0 && !ARR_HASNULL(oldarray))
+	if (mc->optimize > 0 && !ARR_HASNULL(oldarray))
 	{
 		int			i, nelems;
 		size_t		bytes;
 		bool		hasnull;
+		FunctionCallInfoData	fcinfo;
 
 		bytes = ARR_SIZE(oldarray);
 		newarray = DatumGetArrayTypePCopy(oldarray);
 		hasnull = ARR_HASNULL(oldarray);
 		nelems = ArrayGetNItems(ARR_NDIM(oldarray), ARR_DIMS(oldarray));
+		InitFunctionCallInfoData(fcinfo, &mc->flinfo, 1, NULL, NULL);
 
-		if (mc->optimize == 'i' && !hasnull)
+		if (mc->optimize == 'i')
 		{
 			/* optimization for int4 without null */
-			uint32	   *oldints = (uint32 *) ARR_DATA_PTR(oldarray);
-			uint32	   *newints = (uint32 *) ARR_DATA_PTR(newarray);
+			int32	   *oldints = (int32 *) ARR_DATA_PTR(oldarray);
+			int32	   *newints = (int32 *) ARR_DATA_PTR(newarray);
 
 			for(i = 0; i < nelems; i++)
 			{
-				newints[i] = DatumGetUInt32(
-					FunctionCall1(&mc->flinfo, UInt32GetDatum(oldints[i])));
+				fcinfo.arg[0] = Int32GetDatum(oldints[i]);
+				newints[i] = DatumGetInt32(FunctionCallInvoke(&fcinfo));
+				if (fcinfo.isnull)
+				{
+					elog(ERROR, "function %s returned NULL",
+						format_procedure(mc->flinfo.fn_oid));
+				}
 			}
 		}
-		else if (mc->optimize  == 's' && !hasnull)
+		else if (mc->optimize == 'd')
 		{
-			/* optimization for int2 without null */
-			uint16	   *oldints = (uint16 *) ARR_DATA_PTR(oldarray);
-			uint16	   *newints = (uint16 *) ARR_DATA_PTR(newarray);
+			/*
+			 * optimization for int8 wtihout null
+			 * Note that this path is processed only when int8 is byval.
+			 */
+			int64	   *oldints = (int64 *) ARR_DATA_PTR(oldarray);
+			int64	   *newints = (int64 *) ARR_DATA_PTR(newarray);
 
 			for(i = 0; i < nelems; i++)
 			{
-				newints[i] = DatumGetInt16(
-					FunctionCall1(&mc->flinfo, UInt16GetDatum(oldints[i])));
+				fcinfo.arg[0] = Int64GetDatum(oldints[i]);
+				newints[i] = DatumGetInt64(FunctionCallInvoke(&fcinfo));
+				if (fcinfo.isnull)
+				{
+					elog(ERROR, "function %s returned NULL",
+						format_procedure(mc->flinfo.fn_oid));
+				}
+			}
+		}
+		else if (mc->optimize == 's')
+		{
+			/* optimization for int2 without null */
+			int16	   *oldints = (int16 *) ARR_DATA_PTR(oldarray);
+			int16	   *newints = (int16 *) ARR_DATA_PTR(newarray);
+
+			for(i = 0; i < nelems; i++)
+			{
+				fcinfo.arg[0] = Int16GetDatum(oldints[i]);
+				newints[i] = DatumGetInt16(FunctionCallInvoke(&fcinfo));
+				if (fcinfo.isnull)
+				{
+					elog(ERROR, "function %s returned NULL",
+						format_procedure(mc->flinfo.fn_oid));
+				}
 			}
 		}
 		else
 		{
-			elog(ERROR, "unknown optimize code = %c", mc->optimize);
+			elog(ERROR, "unknown optimization code = %c", mc->optimize);
 		}
 	}
 	else
