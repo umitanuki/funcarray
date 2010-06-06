@@ -34,6 +34,27 @@ SELECT maparray(ARRAY['test', 'McDonald']::text[], 'upper');
  {TEST,MCDONALD}
 (1 row)
 
+SELECT reducearray(ARRAY['this', 'is', 'a', 'pen'], 'textcat');
+ reducearray 
+-------------
+ thisisapen
+(1 row)
+
+SELECT filterarray(ARRAY[3,0,100,-1,0], 'bool');
+ filterarray 
+-------------
+ {3,100,-1}
+(1 row)
+
+CREATE FUNCTION _iseven(int) RETURNS bool AS $$
+SELECT $1 % 2 = 0
+$$ LANGUAGE 'SQL' IMMUTABLE STRICT;
+SELECT filterarray(ARRAY[3,0,100,NULL,-1,0], '_iseven');
+  filterarray   
+----------------
+ {0,100,NULL,0}
+(1 row)
+
 CREATE TABLE fatest(
 	iary int4[],
 	mapproc regproc,

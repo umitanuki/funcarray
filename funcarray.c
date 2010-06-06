@@ -31,7 +31,8 @@ typedef struct
 } MapContext;
 
 /* prototype */
-static bool check_lambda_type(Oid procid, Oid element_type, int nargs);
+static bool check_lambda_type(Oid procid, Oid element_type,
+			Oid returned_type, int nargs);
 Datum maparray(PG_FUNCTION_ARGS);
 Datum reducearray(PG_FUNCTION_ARGS);
 Datum filterarray(PG_FUNCTION_ARGS);
@@ -42,11 +43,11 @@ Datum filterarray(PG_FUNCTION_ARGS);
  *		Check if the argument type and return type match the input type.
  *
  *	lambda function accepts required arguments of array's element type and
- *	returns the same type.
+ *	returns the specified type. Polymorphoic types are allowed.
  *	Note that variadic functions aren't supported so far.
  */
 static bool
-check_lambda_type(Oid procid, Oid element_type, int nargs)
+check_lambda_type(Oid procid, Oid element_type, Oid returned_type, int nargs)
 {
 	HeapTuple		ftup;
 	Form_pg_proc	pform;
@@ -63,7 +64,7 @@ check_lambda_type(Oid procid, Oid element_type, int nargs)
 
 	/* return type is binary coercible to input type? */
 	if (!can_coerce_type(1,
-			&element_type, &pform->prorettype, COERCION_IMPLICIT))
+			&pform->prorettype, &returned_type, COERCION_IMPLICIT))
 	{
 		ReleaseSysCache(ftup);
 		return false;
@@ -90,7 +91,7 @@ check_lambda_type(Oid procid, Oid element_type, int nargs)
 	{
 		Oid		argtype = types[i];
 
-		if (!can_coerce_type(1, &argtype, &element_type, COERCION_IMPLICIT))
+		if (!can_coerce_type(1, &element_type, &argtype, COERCION_IMPLICIT))
 		{
 			ReleaseSysCache(ftup);
 			return false;
@@ -171,7 +172,7 @@ maparray(PG_FUNCTION_ARGS)
 		fcinfo->flinfo->fn_extra = (void *) mc;
 
 		/* type check */
-		if (!check_lambda_type(procid, mc->element_type, 1))
+		if (!check_lambda_type(procid, mc->element_type, mc->element_type, 1))
 		{
 			elog(ERROR, "function %s type mismatch",
 				format_procedure(procid));
@@ -288,6 +289,8 @@ maparray(PG_FUNCTION_ARGS)
 						ARR_DIMS(oldarray), ARR_LBOUND(oldarray),
 						mc->element_type, mc->typlen,
 						mc->typbyval, mc->typalign);
+		pfree(values);
+		pfree(nulls);
 	}
 
 	PG_RETURN_ARRAYTYPE_P(newarray);
@@ -351,7 +354,7 @@ reducearray(PG_FUNCTION_ARGS)
 		fcinfo->flinfo->fn_extra = (void *) mc;
 
 		/* type check */
-		if (!check_lambda_type(procid, mc->element_type, 2))
+		if (!check_lambda_type(procid, mc->element_type, mc->element_type, 2))
 		{
 			elog(ERROR, "function %s type mismatch",
 				format_procedure(procid));
@@ -496,6 +499,8 @@ reducearray(PG_FUNCTION_ARGS)
 				result = FunctionCallInvoke(&myinfo);
 			}
 		}
+		pfree(values);
+		pfree(nulls);
 
 		if (isnull)
 		{
@@ -510,6 +515,7 @@ Datum
 filterarray(PG_FUNCTION_ARGS)
 {
 	ArrayType	   *oldarray = PG_GETARG_ARRAYTYPE_P(0);
+	RegProcedure	procid = PG_GETARG_OID(1);
 	MapContext	   *mc;
 	ArrayType	   *newarray;
 
@@ -518,10 +524,10 @@ filterarray(PG_FUNCTION_ARGS)
 	else if (ARR_NDIM(oldarray) != 1)
 		elog(ERROR, "cannot accept >= 2 dim");
 
-	if (fcinfo->flinfo->fn_extra == NULL)
+	if (fcinfo->flinfo->fn_extra == NULL ||
+		((MapContext *) fcinfo->flinfo->fn_extra)->flinfo.fn_oid != procid)
 	{
-		/* first call */
-		RegProcedure	procid = PG_GETARG_OID(1);
+		/* set up context */
 		MemoryContext	oldcontext;
 
 		oldcontext = MemoryContextSwitchTo(fcinfo->flinfo->fn_mcxt);
@@ -532,19 +538,30 @@ filterarray(PG_FUNCTION_ARGS)
 							 &mc->typlen, &mc->typbyval, &mc->typalign);
 		fmgr_info(procid, &mc->flinfo);
 		mc->optimize = 0;
-		if (mc->typlen == sizeof(uint32) && mc->typbyval &&
+		if (mc->typlen == sizeof(int32) && mc->typbyval &&
 			mc->typalign == 'i')
 		{
 			mc->optimize = 'i';
 		}
-		else if (mc->typlen == sizeof(uint16) && mc->typbyval &&
+		else if (mc->typlen == sizeof(int64) && mc->typbyval &&
+			mc->typalign == 'd')
+		{
+			mc->optimize = 'd';
+		}
+		else if (mc->typlen == sizeof(int16) && mc->typbyval &&
 			mc->typalign == 's')
 		{
 			mc->optimize = 's';
 		}
 
-		/* TODO: type check */
 		fcinfo->flinfo->fn_extra = (void *) mc;
+
+		if (!check_lambda_type(procid, mc->element_type, BOOLOID, 1))
+		{
+			elog(ERROR, "function %s type mismatch",
+				format_procedure(procid));
+		}
+
 		MemoryContextSwitchTo(oldcontext);
 	}
 	else
@@ -552,25 +569,32 @@ filterarray(PG_FUNCTION_ARGS)
 		mc = (MapContext *) fcinfo->flinfo->fn_extra;
 	}
 
-	if (mc->typlen > 0)
+	if (mc->optimize > 0 && !ARR_HASNULL(oldarray))
 	{
 		int			i, nelems;
-		bool		hasnull;
+		FunctionCallInfoData	myinfo;
 
-		hasnull = ARR_HASNULL(oldarray);
 		newarray = DatumGetArrayTypePCopy(oldarray);
 		nelems = ArrayGetNItems(ARR_NDIM(oldarray), ARR_DIMS(oldarray));
+		InitFunctionCallInfoData(myinfo, &mc->flinfo, 1, NULL, NULL);
+		myinfo.argnull[0] = false;
 
-		if (mc->optimize == 'i' && !hasnull)
+		if (mc->optimize == 'i')
 		{
-			uint32	   *oldints = (uint32 *) ARR_DATA_PTR(oldarray);
-			uint32	   *newints = (uint32 *) ARR_DATA_PTR(newarray);
+			int32	   *oldints = (int32 *) ARR_DATA_PTR(oldarray);
+			int32	   *newints = (int32 *) ARR_DATA_PTR(newarray);
 			int			newlen = 0;
 
 			for(i = 0; i < nelems; i++)
 			{
-				if (DatumGetBool(
-					FunctionCall1(&mc->flinfo, UInt32GetDatum(oldints[i]))))
+				myinfo.arg[0] = Int32GetDatum(oldints[i]);
+				/*
+				 *	isnull = false everytime as it may be set true
+				 *	in the previous call
+				 */
+				myinfo.isnull = false;
+				if (DatumGetBool(FunctionCallInvoke(&myinfo)) &&
+					!myinfo.isnull)
 				{
 					newints[newlen++] = oldints[i];
 				}
@@ -583,19 +607,21 @@ filterarray(PG_FUNCTION_ARGS)
 
 			SET_VARSIZE(newarray,
 				ARR_OVERHEAD_NONULLS(ARR_NDIM(newarray)) +
-				sizeof(uint32) * newlen);
+				sizeof(int32) * newlen);
 			ARR_DIMS(newarray)[0] = newlen;
 		}
-		else if (mc->optimize == 's' && !hasnull)
+		else if (mc->optimize == 'd')
 		{
-			uint16	   *oldints = (uint16 *) ARR_DATA_PTR(oldarray);
-			uint16	   *newints = (uint16 *) ARR_DATA_PTR(newarray);
+			int64	   *oldints = (int64 *) ARR_DATA_PTR(oldarray);
+			int64	   *newints = (int64 *) ARR_DATA_PTR(newarray);
 			int			newlen = 0;
 
 			for(i = 0; i < nelems; i++)
 			{
-				if (DatumGetBool(
-					FunctionCall1(&mc->flinfo, UInt16GetDatum(oldints[i]))))
+				myinfo.arg[0] = Int64GetDatum(oldints[i]);
+				myinfo.isnull = false;
+				if (DatumGetBool(FunctionCallInvoke(&myinfo)) &&
+					!myinfo.isnull)
 				{
 					newints[newlen++] = oldints[i];
 				}
@@ -608,55 +634,39 @@ filterarray(PG_FUNCTION_ARGS)
 
 			SET_VARSIZE(newarray,
 				ARR_OVERHEAD_NONULLS(ARR_NDIM(newarray)) +
-				sizeof(uint16) * newlen);
+				sizeof(int64) * newlen);
+			ARR_DIMS(newarray)[0] = newlen;
+		}
+		else if (mc->optimize == 's')
+		{
+			int16	   *oldints = (int16 *) ARR_DATA_PTR(oldarray);
+			int16	   *newints = (int16 *) ARR_DATA_PTR(newarray);
+			int			newlen = 0;
+
+			for(i = 0; i < nelems; i++)
+			{
+				myinfo.arg[0] = Int16GetDatum(oldints[i]);
+				myinfo.isnull = false;
+				if (DatumGetBool(FunctionCallInvoke(&myinfo)) &&
+					!myinfo.isnull)
+				{
+					newints[newlen++] = oldints[i];
+				}
+			}
+
+			if (newlen == 0)
+			{
+				PG_RETURN_NULL();
+			}
+
+			SET_VARSIZE(newarray,
+				ARR_OVERHEAD_NONULLS(ARR_NDIM(newarray)) +
+				sizeof(int16) * newlen);
 			ARR_DIMS(newarray)[0] = newlen;
 		}
 		else
 		{
-			/* general case */
-			bits8	   *bitmap = ARR_NULLBITMAP(oldarray);
-			int			bitmask = 1;
-			char	   *olddata = ARR_DATA_PTR(oldarray);
-			char	   *newdata = ARR_DATA_PTR(newarray);
-			int			inc;
-			int			newlen = 0;
-
-			inc = att_align_nominal(mc->typlen, mc->typalign);
-			for(i = 0; i < nelems; i++)
-			{
-				Datum	oldelem;
-
-				if (bitmap && (*bitmap & bitmask) == 0)
-				{
-					/* do nothing */
-				}
-				else
-				{
-					oldelem = fetch_att(olddata, mc->typbyval, mc->typlen);
-					if (DatumGetBool(
-						FunctionCall1(&mc->flinfo, oldelem)))
-					{
-						if (mc->typbyval)
-							store_att_byval(newdata, oldelem, mc->typlen);
-						else
-							memmove(newdata, DatumGetPointer(oldelem), mc->typlen);
-
-						newdata += inc;
-						newlen++;
-					}
-					olddata += inc;
-				}
-
-				if (bitmap)
-				{
-					bitmask <<= 1;
-					if (bitmask == 0x100)
-					{
-						bitmap++;
-						bitmask = 1;
-					}
-				}
-			}
+			elog(ERROR, "unknown optimization code = %c", mc->optimize);
 		}
 	}
 	else
@@ -684,26 +694,33 @@ filterarray(PG_FUNCTION_ARGS)
 		 */
 		for(i = 0; i < nelems; i++)
 		{
-			if (!nulls[i])
+			if (!nulls[i] || !mc->flinfo.fn_strict)
 			{
-				if (DatumGetBool(
-					FunctionCall1(&mc->flinfo, values[i])))
+				FunctionCallInfoData	myinfo;
+
+				InitFunctionCallInfoData(myinfo, &mc->flinfo, 1, NULL, NULL);
+				myinfo.arg[0] = values[i];
+				myinfo.argnull[0] = nulls[i];
+				if (DatumGetBool(FunctionCallInvoke(&myinfo)) &&
+					!myinfo.isnull)
 				{
 					values[newlen] = values[i];
-					nulls[newlen] = false;
+					nulls[newlen] = nulls[i];
 					newlen++;
 				}
 			}
-			else
-			{
-				nulls[newlen] = nulls[i];
-			}
+			/*
+			 *	null input on strict function means NULL result,
+			 *	which means the value is 'false', and filter it.
+			 */
 		}
 
 		newarray = construct_md_array(values, nulls, ARR_NDIM(oldarray),
 							&newlen, ARR_LBOUND(oldarray),
 							mc->element_type, mc->typlen,
 							mc->typbyval, mc->typalign);
+		pfree(values);
+		pfree(nulls);
 	}
 
 	PG_RETURN_ARRAYTYPE_P(newarray);

@@ -18,6 +18,16 @@ SELECT maparray(ARRAY[1.5::float,0.3,1], '_floatdiv2');
 
 SELECT maparray(ARRAY['test', 'McDonald']::text[], 'upper');
 
+SELECT reducearray(ARRAY['this', 'is', 'a', 'pen'], 'textcat');
+
+SELECT filterarray(ARRAY[3,0,100,-1,0], 'bool');
+
+CREATE FUNCTION _iseven(int) RETURNS bool AS $$
+SELECT $1 % 2 = 0
+$$ LANGUAGE 'SQL' IMMUTABLE STRICT;
+
+SELECT filterarray(ARRAY[3,0,100,NULL,-1,0], '_iseven');
+
 CREATE TABLE fatest(
 	iary int4[],
 	mapproc regproc,
