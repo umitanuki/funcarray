@@ -1,3 +1,14 @@
+/*----------------------------------------------------------------------------
+ * funcarray.c
+ *	a set of functional array procedures
+ *
+ *	All the procedures optimze process if the element type is byval and
+ *	fixed format and lambda function is strict and array has no NULLs. In
+ *	the optimization, lambda function is not allowed to return NULL, so if
+ *	you expect lambda function returning NULL sometimes, mark it as
+ *	non-strict even though it doesn't accept NULL (which means you have to
+ *	modify it so that it accepts NULL input).
+ *---------------------------------------------------------------------------*/
 #include "postgres.h"
 
 #include "access/tupmacs.h"
@@ -186,7 +197,7 @@ maparray(PG_FUNCTION_ARGS)
 		mc = (MapContext *) fcinfo->flinfo->fn_extra;
 	}
 
-	if (mc->optimize > 0 && !ARR_HASNULL(oldarray))
+	if (mc->optimize > 0 && !ARR_HASNULL(oldarray) && mc->flinfo.fn_strict)
 	{
 		int			i, nelems;
 		size_t		bytes;
@@ -367,7 +378,7 @@ reducearray(PG_FUNCTION_ARGS)
 		mc = (MapContext *) fcinfo->flinfo->fn_extra;
 	}
 
-	if (mc->optimize > 0 && !ARR_HASNULL(array))
+	if (mc->optimize > 0 && !ARR_HASNULL(array) && mc->flinfo.fn_strict)
 	{
 		int			i, nelems;
 		FunctionCallInfoData	myinfo;
@@ -583,7 +594,7 @@ filterarray(PG_FUNCTION_ARGS)
 		mc = (MapContext *) fcinfo->flinfo->fn_extra;
 	}
 
-	if (mc->optimize > 0 && !ARR_HASNULL(oldarray))
+	if (mc->optimize > 0 && !ARR_HASNULL(oldarray) && mc->flinfo.fn_strict)
 	{
 		int			i, nelems;
 		FunctionCallInfoData	myinfo;
