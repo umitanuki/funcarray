@@ -554,6 +554,20 @@ filterarray(PG_FUNCTION_ARGS)
 			mc->optimize = 's';
 		}
 
+		{
+			/* param is dummy for polymorphic argument */
+			Param	   *param = makeNode(Param);
+			param->paramkind = PARAM_EXTERN;
+			param->paramtype = mc->element_type;
+			param->paramtypmod = -1; /* function input has always -1 */
+			param->location = -1;
+			mc->flinfo.fn_expr = (Node *) makeFuncExpr(
+									procid,
+									mc->element_type,
+									list_make1(param),
+									COERCE_EXPLICIT_CAST);
+		}
+
 		fcinfo->flinfo->fn_extra = (void *) mc;
 
 		if (!check_lambda_type(procid, mc->element_type, BOOLOID, 1))

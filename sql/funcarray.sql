@@ -24,7 +24,7 @@ SELECT filterarray(ARRAY[3,0,100,-1,0], 'bool');
 
 CREATE FUNCTION _iseven(int) RETURNS bool AS $$
 SELECT $1 % 2 = 0
-$$ LANGUAGE 'SQL' IMMUTABLE STRICT;
+$$ LANGUAGE 'SQL' IMMUTABLE;
 
 SELECT filterarray(ARRAY[3,0,100,NULL,-1,0], '_iseven');
 
