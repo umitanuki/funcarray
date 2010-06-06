@@ -4,6 +4,7 @@
 #include "catalog/pg_proc.h"
 #include "catalog/pg_type.h"
 #include "nodes/makefuncs.h"
+#include "nodes/nodes.h"
 #include "parser/parse_coerce.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
@@ -30,28 +31,29 @@ typedef struct
 } MapContext;
 
 /* prototype */
-static bool check_map_lambda_type(Oid procid, Oid element_type);
+static bool check_lambda_type(Oid procid, Oid element_type, int nargs);
 Datum maparray(PG_FUNCTION_ARGS);
 Datum reducearray(PG_FUNCTION_ARGS);
 Datum filterarray(PG_FUNCTION_ARGS);
 
 
 /*
- *	check_map_lambda_type
+ *	check_lambda_type
  *		Check if the argument type and return type match the input type.
  *
- *	map's lambda accepts 1 argument of array's element type and
+ *	lambda function accepts required arguments of array's element type and
  *	returns the same type.
  *	Note that variadic functions aren't supported so far.
  */
 static bool
-check_map_lambda_type(Oid procid, Oid element_type)
+check_lambda_type(Oid procid, Oid element_type, int nargs)
 {
 	HeapTuple		ftup;
 	Form_pg_proc	pform;
 	oidvector	   *argtypes;
 	bool			isnull;
-	Oid				arg1type;
+	int				i;
+	Oid			   *types;
 	Oid				coerce_funcid;
 
 	ftup = SearchSysCache(PROCOID, ObjectIdGetDatum(procid), 0, 0, 0);
@@ -67,8 +69,8 @@ check_map_lambda_type(Oid procid, Oid element_type)
 		return false;
 	}
 
-	/* lambda accepts 1 argument */
-	if (pform->pronargs != 1)
+	/* lambda accepts exactly required number of arguments */
+	if (pform->pronargs != nargs)
 	{
 		ReleaseSysCache(ftup);
 		return false;
@@ -83,22 +85,28 @@ check_map_lambda_type(Oid procid, Oid element_type)
 	}
 
 	/* argument type must match the input type */
-	arg1type = *((Oid *) ARR_DATA_PTR(argtypes));
-	if (!can_coerce_type(1, &element_type, &arg1type, COERCION_IMPLICIT))
+	types = (Oid *) ARR_DATA_PTR(argtypes);
+	for(i = 0; i < nargs; i++)
 	{
-		ReleaseSysCache(ftup);
-		return false;
-	}
+		Oid		argtype = types[i];
 
-	/*
-	 * can_coerce_type() doesn't report COERCION_PATH_FUNC case.
-	 * We need binary coercible case only.
-	 */
-	if (find_coercion_pathway(arg1type, element_type,
-			COERCION_IMPLICIT, &coerce_funcid) != COERCION_PATH_RELABELTYPE)
-	{
-		ReleaseSysCache(ftup);
-		return false;
+		if (!can_coerce_type(1, &argtype, &element_type, COERCION_IMPLICIT))
+		{
+			ReleaseSysCache(ftup);
+			return false;
+		}
+
+		/*
+		 * can_coerce_type() doesn't report COERCION_PATH_FUNC case.
+		 * We need binary coercible case only.
+		 */
+		if (find_coercion_pathway(argtype,
+				element_type, COERCION_IMPLICIT, &coerce_funcid) !=
+				COERCION_PATH_RELABELTYPE)
+		{
+			ReleaseSysCache(ftup);
+			return false;
+		}
 	}
 
 	ReleaseSysCache(ftup);
@@ -163,7 +171,7 @@ maparray(PG_FUNCTION_ARGS)
 		fcinfo->flinfo->fn_extra = (void *) mc;
 
 		/* type check */
-		if (!check_map_lambda_type(procid, mc->element_type))
+		if (!check_lambda_type(procid, mc->element_type, 1))
 		{
 			elog(ERROR, "function %s type mismatch",
 				format_procedure(procid));
@@ -181,14 +189,12 @@ maparray(PG_FUNCTION_ARGS)
 	{
 		int			i, nelems;
 		size_t		bytes;
-		bool		hasnull;
-		FunctionCallInfoData	fcinfo;
+		FunctionCallInfoData	myinfo;
 
 		bytes = ARR_SIZE(oldarray);
 		newarray = DatumGetArrayTypePCopy(oldarray);
-		hasnull = ARR_HASNULL(oldarray);
 		nelems = ArrayGetNItems(ARR_NDIM(oldarray), ARR_DIMS(oldarray));
-		InitFunctionCallInfoData(fcinfo, &mc->flinfo, 1, NULL, NULL);
+		InitFunctionCallInfoData(myinfo, &mc->flinfo, 1, NULL, NULL);
 
 		if (mc->optimize == 'i')
 		{
@@ -198,9 +204,9 @@ maparray(PG_FUNCTION_ARGS)
 
 			for(i = 0; i < nelems; i++)
 			{
-				fcinfo.arg[0] = Int32GetDatum(oldints[i]);
-				newints[i] = DatumGetInt32(FunctionCallInvoke(&fcinfo));
-				if (fcinfo.isnull)
+				myinfo.arg[0] = Int32GetDatum(oldints[i]);
+				newints[i] = DatumGetInt32(FunctionCallInvoke(&myinfo));
+				if (myinfo.isnull)
 				{
 					elog(ERROR, "function %s returned NULL",
 						format_procedure(mc->flinfo.fn_oid));
@@ -218,9 +224,9 @@ maparray(PG_FUNCTION_ARGS)
 
 			for(i = 0; i < nelems; i++)
 			{
-				fcinfo.arg[0] = Int64GetDatum(oldints[i]);
-				newints[i] = DatumGetInt64(FunctionCallInvoke(&fcinfo));
-				if (fcinfo.isnull)
+				myinfo.arg[0] = Int64GetDatum(oldints[i]);
+				newints[i] = DatumGetInt64(FunctionCallInvoke(&myinfo));
+				if (myinfo.isnull)
 				{
 					elog(ERROR, "function %s returned NULL",
 						format_procedure(mc->flinfo.fn_oid));
@@ -235,9 +241,9 @@ maparray(PG_FUNCTION_ARGS)
 
 			for(i = 0; i < nelems; i++)
 			{
-				fcinfo.arg[0] = Int16GetDatum(oldints[i]);
-				newints[i] = DatumGetInt16(FunctionCallInvoke(&fcinfo));
-				if (fcinfo.isnull)
+				myinfo.arg[0] = Int16GetDatum(oldints[i]);
+				newints[i] = DatumGetInt16(FunctionCallInvoke(&myinfo));
+				if (myinfo.isnull)
 				{
 					elog(ERROR, "function %s returned NULL",
 						format_procedure(mc->flinfo.fn_oid));
@@ -267,14 +273,14 @@ maparray(PG_FUNCTION_ARGS)
 		{
 			if (!nulls[i] || !mc->flinfo.fn_strict)
 			{
-				FunctionCallInfoData	fcinfo;
+				FunctionCallInfoData	myinfo;
 
-				InitFunctionCallInfoData(fcinfo, &mc->flinfo, 1, NULL, NULL);
-				fcinfo.arg[0] = values[i];
-				fcinfo.argnull[0] = nulls[i];
+				InitFunctionCallInfoData(myinfo, &mc->flinfo, 1, NULL, NULL);
+				myinfo.arg[0] = values[i];
+				myinfo.argnull[0] = nulls[i];
 
-				values[i] = FunctionCallInvoke(&fcinfo);
-				nulls[i] = fcinfo.isnull;
+				values[i] = FunctionCallInvoke(&myinfo);
+				nulls[i] = myinfo.isnull;
 			}
 		}
 
@@ -291,14 +297,18 @@ Datum
 reducearray(PG_FUNCTION_ARGS)
 {
 	ArrayType	   *array = PG_GETARG_ARRAYTYPE_P(0);
+	RegProcedure	procid = PG_GETARG_OID(1);
 	MapContext	   *mc;
 	Datum			result = 0;
 
-	if (fcinfo->flinfo->fn_extra == NULL)
+	if (fcinfo->flinfo->fn_extra == NULL ||
+		((MapContext *) fcinfo->flinfo->fn_extra)->flinfo.fn_oid != procid)
 	{
-		/* first call */
-		RegProcedure	procid = PG_GETARG_OID(1);
+		/* set up context */
 		MemoryContext	oldcontext;
+
+		if (fcinfo->flinfo->fn_extra)
+			pfree(fcinfo->flinfo->fn_extra);
 
 		oldcontext = MemoryContextSwitchTo(fcinfo->flinfo->fn_mcxt);
 
@@ -308,19 +318,45 @@ reducearray(PG_FUNCTION_ARGS)
 							&mc->typlen, &mc->typbyval, &mc->typalign);
 		fmgr_info(procid, &mc->flinfo);
 		mc->optimize = 0;
-		if (mc->typlen == sizeof(uint32) && mc->typbyval &&
+		if (mc->typlen == sizeof(int32) && mc->typbyval &&
 			mc->typalign == 'i')
 		{
 			mc->optimize = 'i';
 		}
-		else if (mc->typlen == sizeof(uint16) && mc->typbyval &&
+		else if (mc->typlen == sizeof(int64) && mc->typbyval &&
+			mc->typalign == 'd')
+		{
+			mc->optimize = 'd';
+		}
+		else if (mc->typlen == sizeof(int16) && mc->typbyval &&
 			mc->typalign == 's')
 		{
 			mc->optimize = 's';
 		}
 
-		/* TODO: type check */
+		{
+			/* param is dummy for polymorphic argument */
+			Param	   *param = makeNode(Param);
+			param->paramkind = PARAM_EXTERN;
+			param->paramtype = mc->element_type;
+			param->paramtypmod = -1; /* function input has always -1 */
+			param->location = -1;
+			mc->flinfo.fn_expr = (Node *) makeFuncExpr(
+									procid,
+									mc->element_type,
+									list_make2(param, copyObject(param)),
+									COERCE_EXPLICIT_CAST);
+		}
+
 		fcinfo->flinfo->fn_extra = (void *) mc;
+
+		/* type check */
+		if (!check_lambda_type(procid, mc->element_type, 2))
+		{
+			elog(ERROR, "function %s type mismatch",
+				format_procedure(procid));
+		}
+
 		MemoryContextSwitchTo(oldcontext);
 	}
 	else
@@ -328,98 +364,91 @@ reducearray(PG_FUNCTION_ARGS)
 		mc = (MapContext *) fcinfo->flinfo->fn_extra;
 	}
 
-	if (mc->typlen > 0)
+	if (mc->optimize > 0 && !ARR_HASNULL(array))
 	{
 		int			i, nelems;
-		bool		hasnull;
+		FunctionCallInfoData	myinfo;
 
-		hasnull = ARR_HASNULL(array);
 		nelems = ArrayGetNItems(ARR_NDIM(array), ARR_DIMS(array));
+		InitFunctionCallInfoData(myinfo, &mc->flinfo, 2, NULL, NULL);
 
 		if (nelems == 0)
 		{
 			PG_RETURN_NULL();
 		}
 
-		if (mc->optimize == 'i' && !hasnull)
+		if (mc->optimize == 'i')
 		{
 			/* optimization for int4 without null */
-			uint32	   *ints = (uint32 *) ARR_DATA_PTR(array);
-			uint32		state = ints[0];
+			int32	   *ints = (int32 *) ARR_DATA_PTR(array);
+
+			myinfo.arg[0] = Int32GetDatum(ints[0]);
+			myinfo.argnull[0] = false;
+			myinfo.argnull[1] = false;
 
 			for(i = 1; i < nelems; i++)
 			{
-				state = DatumGetUInt32(
-					FunctionCall2(&mc->flinfo,
-						UInt32GetDatum(state), UInt32GetDatum(ints[i])));
+				myinfo.arg[1] = Int32GetDatum(ints[i]);
+				myinfo.arg[0] = FunctionCallInvoke(&myinfo);
+				if (myinfo.isnull)
+				{
+					elog(ERROR, "function %s returned NULL",
+						format_procedure(mc->flinfo.fn_oid));
+				}
 			}
 
-			result = UInt32GetDatum(state);
+			result = Int32GetDatum(myinfo.arg[0]);
 		}
-		else if (mc->optimize == 's' && !hasnull)
+		else if (mc->optimize == 'd')
+		{
+			/*
+			 * optimization for int8 without null.
+			 * Note that this path is processed only when int8 is byval.
+			 */
+			int64	   *ints = (int64 *) ARR_DATA_PTR(array);
+
+			myinfo.arg[0] = Int64GetDatum(ints[0]);
+			myinfo.argnull[0] = false;
+			myinfo.argnull[1] = false;
+
+			for(i = 1; i < nelems; i++)
+			{
+				myinfo.arg[1] = Int64GetDatum(ints[i]);
+				myinfo.arg[0] = FunctionCallInvoke(&myinfo);
+				if (myinfo.isnull)
+				{
+					elog(ERROR, "function %s returned NULL",
+						format_procedure(mc->flinfo.fn_oid));
+				}
+			}
+
+			result = Int64GetDatum(myinfo.arg[0]);
+		}
+		else if (mc->optimize == 's')
 		{
 			/* optimization for int2 without null */
 			uint16	   *ints = (uint16 *) ARR_DATA_PTR(array);
-			uint16		state = ints[0];
+
+			myinfo.arg[0] = Int16GetDatum(ints[0]);
+			myinfo.argnull[0] = false;
+			myinfo.argnull[1] = false;
 
 			for(i = 1; i < nelems; i++)
 			{
-				state = DatumGetUInt16(
-					FunctionCall2(&mc->flinfo,
-						UInt16GetDatum(state), UInt16GetDatum(ints[i])));
+				myinfo.arg[1] = Int16GetDatum(ints[i]);
+				myinfo.arg[0] = FunctionCallInvoke(&myinfo);
+				if (myinfo.isnull)
+				{
+					elog(ERROR, "function %s returned NULL",
+						format_procedure(mc->flinfo.fn_oid));
+				}
 			}
 
-			result = UInt16GetDatum(state);
+			result = Int16GetDatum(myinfo.arg[0]);
 		}
 		else
 		{
-			/* general way */
-			bits8	   *bitmap = ARR_NULLBITMAP(array);
-			int			bitmask = 1;
-			char	   *data = ARR_DATA_PTR(array);
-			bool		isnull = true;
-
-			for(i = 0; i < nelems; i++)
-			{
-				Datum	elem;
-
-				if (bitmap && (*bitmap & bitmask) == 0)
-				{
-					/* do nothing */
-				}
-				else
-				{
-					elem = fetch_att(data, mc->typbyval, mc->typlen);
-
-					if (isnull)
-					{
-						/* fetch the first non-null input */
-						result = elem;
-						isnull = false;
-					}
-					else
-					{
-						result = FunctionCall2(&mc->flinfo, result, elem);
-					}
-
-					data += att_align_nominal(mc->typlen, mc->typalign);
-				}
-
-				if (bitmap)
-				{
-					bitmask <<= 1;
-					if (bitmask == 0x100)
-					{
-						bitmap++;
-						bitmask = 1;
-					}
-				}
-			}
-
-			if (isnull)
-			{
-				PG_RETURN_NULL();
-			}
+			elog(ERROR, "unknown optimization code %c", mc->optimize);
 		}
 	}
 	else
@@ -444,18 +473,33 @@ reducearray(PG_FUNCTION_ARGS)
 
 		for(i = 0; i < nelems; i++)
 		{
-			if (!nulls[i])
+			
+			if (nulls[i] && mc->flinfo.fn_strict)
 			{
-				if (isnull)
-				{
-					result = values[i];
-					isnull = false;
-				}
-				else
-				{
-					result = FunctionCall2(&mc->flinfo, result, values[i]);
-				}
+				continue;
 			}
+			if (isnull)
+			{
+				result = values[i];
+				isnull = false;
+			}
+			else
+			{
+				FunctionCallInfoData	myinfo;
+
+				InitFunctionCallInfoData(myinfo, &mc->flinfo, 2, NULL, NULL);
+				myinfo.arg[0] = result;
+				myinfo.argnull[0] = false;
+				myinfo.arg[1] = values[i];
+				myinfo.argnull[1] = nulls[i];
+
+				result = FunctionCallInvoke(&myinfo);
+			}
+		}
+
+		if (isnull)
+		{
+			PG_RETURN_NULL();
 		}
 	}
 

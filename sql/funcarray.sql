@@ -20,16 +20,28 @@ SELECT maparray(ARRAY['test', 'McDonald']::text[], 'upper');
 
 CREATE TABLE fatest(
 	iary int4[],
+	mapproc regproc,
+	reduceproc regproc
+);
+
+INSERT INTO fatest (iary, mapproc, reduceproc) VALUES
+(ARRAY[3, 5, 10], 'int4inc', 'int4pl'),
+(ARRAY[-100, NULL, NULL, NULL, 5], 'int4um', 'int4mul'),
+('[0:1]={2,3}', 'int4inc', 'int4pl'),
+(ARRAY[[1,2],[2,3]], 'int4um', 'int4mul');
+
+SELECT maparray(iary, 'int4inc'), maparray(iary, mapproc) FROM fatest;
+
+SELECT reducearray(iary, reduceproc) FROM fatest;
+
+CREATE TABLE fatest2(
 	tary text[],
 	proc regproc
 );
 
-INSERT INTO fatest (iary, proc) VALUES
-(ARRAY[3, 5, 10], 'int4inc'),
-(ARRAY[-100, NULL, NULL, NULL, 5], 'int4um'),
-('[0:1]={2,3}', 'int4inc'),
-(ARRAY[[1,2],[2,3]], 'int4um');
+INSERT INTO fatest2(tary, proc) VALUES
+(ARRAY['traffic', 'country', 'united kingdom'], 'upper'),
+(ARRAY[NULL, 'WHO', 'Traffic', 'President', 'Long Horn', NULL], 'lower'),
+('[0:1]={enable_nestloop, enable_mergejoin}', 'current_setting');
 
-SELECT maparray(iary, 'int4inc'), maparray(iary, proc) FROM fatest;
-
-SELECT reducearray(iary, 'int4pl') FROM fatest;
+SELECT maparray(tary, proc) FROM fatest2;
